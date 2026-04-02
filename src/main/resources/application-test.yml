@@ -1,0 +1,12 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
+app:
+  jwt:
+    secret: test-secret-key-for-testing-purposes-must-be-at-least-256-bits-long-minimum!!
+    access-token-expiration: 60000
+    refresh-token-expiration: 120000
