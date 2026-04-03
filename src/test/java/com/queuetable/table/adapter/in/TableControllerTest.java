@@ -2,6 +2,7 @@ package com.queuetable.table.adapter.in;
 
 import com.jayway.jsonpath.JsonPath;
 import com.queuetable.auth.dto.AuthResponse;
+import com.queuetable.reservation.dto.CreateReservationRequest;
 import com.queuetable.shared.AbstractIntegrationTest;
 import com.queuetable.table.dto.CreateTableRequest;
 import com.queuetable.table.dto.UpdateTableRequest;
@@ -12,6 +13,8 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.UUID;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -116,6 +119,56 @@ class TableControllerTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void createTablesBulk_success() throws Exception {
+        AuthResponse auth = freshRestaurant(UUID.randomUUID().toString().substring(0, 8));
+
+        mockMvc.perform(post("/restaurants/{id}/tables/bulk", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "labelPrefix": "Mesa",
+                                  "fromNumber": 1,
+                                  "toNumber": 3,
+                                  "capacity": 4,
+                                  "zone": "Sala"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.length()").value(3))
+                .andExpect(jsonPath("$[0].label").value("Mesa 1"))
+                .andExpect(jsonPath("$[1].label").value("Mesa 2"))
+                .andExpect(jsonPath("$[2].label").value("Mesa 3"))
+                .andExpect(jsonPath("$[0].capacity").value(4))
+                .andExpect(jsonPath("$[0].zone").value("Sala"));
+    }
+
+    @Test
+    void createTablesBulk_duplicateLabel_rollsBackBatch() throws Exception {
+        AuthResponse auth = freshRestaurant(UUID.randomUUID().toString().substring(0, 8));
+        createTableAndGetId(auth, "Mesa 2", 4);
+
+        mockMvc.perform(post("/restaurants/{id}/tables/bulk", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "labelPrefix": "Mesa",
+                                  "fromNumber": 1,
+                                  "toNumber": 3,
+                                  "capacity": 4
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(get("/restaurants/{id}/tables", auth.restaurantId())
+                        .header("Authorization", bearer(auth)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].label").value("Mesa 2"));
+    }
+
+    @Test
     void updateTable_success() throws Exception {
         AuthResponse auth = freshRestaurant(UUID.randomUUID().toString().substring(0, 8));
         String tableId = createTableAndGetId(auth, "Mesa Original", 2);
@@ -143,6 +196,52 @@ class TableControllerTest extends AbstractIntegrationTest {
                         .header("Authorization", bearer(auth)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].status").value("OCCUPIED"));
+    }
+
+    @Test
+    void listTables_marksAssignedReservationWithinOneHourAsReservedSoon() throws Exception {
+        AuthResponse auth = freshRestaurant(UUID.randomUUID().toString().substring(0, 8));
+        String tableId = createTableAndGetId(auth, "Mesa Aviso", 4);
+
+        mockMvc.perform(post("/restaurants/{id}/reservations", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CreateReservationRequest(
+                                "Cliente Aviso",
+                                null,
+                                4,
+                                Instant.now().plus(45, ChronoUnit.MINUTES),
+                                UUID.fromString(tableId),
+                                null))))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/restaurants/{id}/tables", auth.restaurantId())
+                        .header("Authorization", bearer(auth)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].reservedSoon").value(true));
+    }
+
+    @Test
+    void listTables_doesNotMarkAssignedReservationOutsideOneHourWindow() throws Exception {
+        AuthResponse auth = freshRestaurant(UUID.randomUUID().toString().substring(0, 8));
+        String tableId = createTableAndGetId(auth, "Mesa Lejana", 4);
+
+        mockMvc.perform(post("/restaurants/{id}/reservations", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CreateReservationRequest(
+                                "Cliente Lejano",
+                                null,
+                                4,
+                                Instant.now().plus(2, ChronoUnit.HOURS),
+                                UUID.fromString(tableId),
+                                null))))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/restaurants/{id}/tables", auth.restaurantId())
+                        .header("Authorization", bearer(auth)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].reservedSoon").value(false));
     }
 
     @Test

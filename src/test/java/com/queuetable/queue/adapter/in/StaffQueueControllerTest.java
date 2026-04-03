@@ -176,6 +176,26 @@ class StaffQueueControllerTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void addWalkIn_ignoresCancelledHistoryWhenAssigningPosition() throws Exception {
+        AuthResponse auth = freshRestaurant();
+        String slug = slugOf(auth);
+
+        MvcResult joinResult = joinQueue(slug, "ToCancel", 2);
+        String entryId = JsonPath.read(joinResult.getResponse().getContentAsString(), "$.entryId");
+
+        mockMvc.perform(post("/restaurants/{rid}/queue/{eid}/cancel", auth.restaurantId(), entryId)
+                        .header("Authorization", bearer(auth)))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(post("/restaurants/{id}/queue", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new JoinQueueRequest("Walk In Person", 3, "555-0000"))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.position").value(1));
+    }
+
+    @Test
     void addWalkIn_otherRestaurant_returns403() throws Exception {
         AuthResponse owner = freshRestaurant();
         AuthResponse intruder = freshRestaurant();
@@ -228,7 +248,7 @@ class StaffQueueControllerTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void seatEntry_tableTooSmall_returns400() throws Exception {
+    void seatEntry_tableTooSmall_isAllowed() throws Exception {
         AuthResponse auth = freshRestaurant();
         String slug = slugOf(auth);
         String tableId = createTable(auth, "Mesa Tiny", 2);
@@ -241,7 +261,9 @@ class StaffQueueControllerTest extends AbstractIntegrationTest {
                         .header("Authorization", bearer(auth))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(seatReq)))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SEATED"))
+                .andExpect(jsonPath("$.tableId").value(tableId));
     }
 
     @Test

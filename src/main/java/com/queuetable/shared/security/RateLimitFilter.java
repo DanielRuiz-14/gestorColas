@@ -6,9 +6,10 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -22,14 +23,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 @ConditionalOnProperty(name = "queuetable.rate-limit.enabled", havingValue = "true", matchIfMissing = true)
 public class RateLimitFilter extends OncePerRequestFilter {
 
-    private static final int MAX_JOINS_PER_HOUR = 10;
-    private static final long WINDOW_MILLIS = 3_600_000L; // 1 hour
-
+    private final int maxRequests;
+    private final long windowMillis;
     private final Map<String, RateWindow> ipWindows = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
 
-    public RateLimitFilter(ObjectMapper objectMapper) {
+    public RateLimitFilter(
+            ObjectMapper objectMapper,
+            @Value("${queuetable.rate-limit.max-requests:10}") int maxRequests,
+            @Value("${queuetable.rate-limit.window-seconds:3600}") int windowSeconds) {
         this.objectMapper = objectMapper;
+        this.maxRequests = maxRequests;
+        this.windowMillis = windowSeconds * 1000L;
     }
 
     @Override
@@ -40,7 +45,6 @@ public class RateLimitFilter extends OncePerRequestFilter {
         String path = request.getRequestURI();
         String method = request.getMethod();
 
-        // Only rate limit POST to public queue join endpoints
         if ("POST".equals(method) && path.matches("/public/restaurants/.+/queue")) {
             String ip = getClientIp(request);
             RateWindow window = ipWindows.compute(ip, (key, existing) -> {
@@ -50,11 +54,11 @@ public class RateLimitFilter extends OncePerRequestFilter {
                 return existing;
             });
 
-            if (window.incrementAndCheck() > MAX_JOINS_PER_HOUR) {
+            if (window.incrementAndCheck() > maxRequests) {
                 response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 ErrorResponse error = ErrorResponse.of(
-                        "Rate limit exceeded. Maximum " + MAX_JOINS_PER_HOUR + " joins per hour.",
+                        "Rate limit exceeded. Maximum " + maxRequests + " joins per window.",
                         "RATE_LIMITED", 429);
                 response.getWriter().write(objectMapper.writeValueAsString(error));
                 return;
@@ -72,7 +76,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         return request.getRemoteAddr();
     }
 
-    private static class RateWindow {
+    private class RateWindow {
         private final Instant start = Instant.now();
         private final AtomicInteger count = new AtomicInteger(0);
 
@@ -81,7 +85,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
 
         boolean isExpired() {
-            return Instant.now().toEpochMilli() - start.toEpochMilli() > WINDOW_MILLIS;
+            return Instant.now().toEpochMilli() - start.toEpochMilli() > windowMillis;
         }
     }
 }

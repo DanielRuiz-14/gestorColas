@@ -1,4 +1,6 @@
 spring:
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
   application:
     name: queuetable
   datasource:
@@ -30,6 +32,12 @@ app:
     base-url: ${QR_BASE_URL:http://localhost:3000/restaurant}
     width: 300
     height: 300
+
+queuetable:
+  rate-limit:
+    enabled: true
+    max-requests: 10
+    window-seconds: 3600
 
 springdoc:
   api-docs:

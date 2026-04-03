@@ -124,6 +124,26 @@ class PublicQueueControllerTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void joinQueue_ignoresCancelledHistoryWhenAssigningPosition() throws Exception {
+        AuthResponse auth = freshRestaurant();
+        String slug = slugOf(auth);
+
+        MvcResult firstJoin = joinQueue(slug, "First", 2);
+        String entryId = JsonPath.read(firstJoin.getResponse().getContentAsString(), "$.entryId");
+        String accessToken = JsonPath.read(firstJoin.getResponse().getContentAsString(), "$.accessToken");
+
+        mockMvc.perform(delete("/public/queue/{entryId}", entryId)
+                        .param("accessToken", accessToken))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(post("/public/restaurants/{slug}/queue", slug)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new JoinQueueRequest("Second", 2, null))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.position").value(1));
+    }
+
+    @Test
     void joinQueue_invalidPartySize_returns400() throws Exception {
         AuthResponse auth = freshRestaurant();
         String slug = slugOf(auth);

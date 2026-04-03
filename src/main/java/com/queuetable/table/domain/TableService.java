@@ -12,6 +12,7 @@ import com.queuetable.shared.security.SecurityContextUtil;
 import com.queuetable.shared.websocket.EventPublisher;
 import org.springframework.context.ApplicationEventPublisher;
 import com.queuetable.table.dto.CreateTableRequest;
+import com.queuetable.table.dto.CreateTablesBulkRequest;
 import com.queuetable.table.dto.TableResponse;
 import com.queuetable.table.dto.UpdateTableRequest;
 import org.slf4j.Logger;
@@ -21,6 +22,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -30,6 +33,9 @@ import java.util.stream.Collectors;
 public class TableService {
 
     private static final Logger log = LoggerFactory.getLogger(TableService.class);
+    private static final int MAX_BULK_TABLES = 200;
+    private static final int MAX_LABEL_LENGTH = 100;
+    private static final int PENDING_RESERVATION_WARNING_MINUTES = 60;
 
     private final TableRepository tableRepository;
     private final ReservationRepository reservationRepository;
@@ -53,7 +59,7 @@ public class TableService {
     public List<TableResponse> listByRestaurant(UUID restaurantId) {
         SecurityContextUtil.validateRestaurantOwnership(restaurantId);
         List<RestaurantTable> tables = tableRepository.findByRestaurantIdOrderByLabelAsc(restaurantId);
-        Set<UUID> reservedSoonTableIds = getReservedSoonTableIds(restaurantId);
+        Set<UUID> reservedSoonTableIds = getReservationWarningTableIds(restaurantId);
         return tables.stream()
                 .map(t -> TableResponse.from(t, reservedSoonTableIds.contains(t.getId())))
                 .toList();
@@ -63,7 +69,7 @@ public class TableService {
     public List<TableResponse> getAvailableTables(UUID restaurantId, int groupSize) {
         SecurityContextUtil.validateRestaurantOwnership(restaurantId);
         List<RestaurantTable> tables = tableRepository.findByRestaurantIdOrderByLabelAsc(restaurantId);
-        Set<UUID> reservedSoonTableIds = getReservedSoonTableIds(restaurantId);
+        Set<UUID> reservedSoonTableIds = getProtectedReservedTableIds(restaurantId);
 
         return tables.stream()
                 .filter(t -> t.getStatus() == TableStatus.FREE)
@@ -73,7 +79,7 @@ public class TableService {
                 .toList();
     }
 
-    private Set<UUID> getReservedSoonTableIds(UUID restaurantId) {
+    private Set<UUID> getProtectedReservedTableIds(UUID restaurantId) {
         RestaurantConfig config = configRepository.findByRestaurantId(restaurantId).orElse(null);
         if (config == null) return Set.of();
 
@@ -90,6 +96,24 @@ public class TableService {
                 .collect(Collectors.toSet());
     }
 
+    private Set<UUID> getReservationWarningTableIds(UUID restaurantId) {
+        Instant now = Instant.now();
+        Instant warningWindowEnd = now.plus(PENDING_RESERVATION_WARNING_MINUTES, ChronoUnit.MINUTES);
+
+        return reservationRepository.findByRestaurantIdOrderByReservedAtAsc(restaurantId).stream()
+                .filter(reservation -> reservation.getTableId() != null)
+                .filter(reservation -> {
+                    if (reservation.getStatus() == ReservationStatus.BOOKED) {
+                        return !reservation.getReservedAt().isBefore(now)
+                                && !reservation.getReservedAt().isAfter(warningWindowEnd);
+                    }
+                    return reservation.getStatus() == ReservationStatus.ARRIVED
+                            && !reservation.getReservedAt().isAfter(warningWindowEnd);
+                })
+                .map(Reservation::getTableId)
+                .collect(Collectors.toSet());
+    }
+
     @Transactional
     public RestaurantTable create(UUID restaurantId, CreateTableRequest request) {
         SecurityContextUtil.validateRestaurantOwnership(restaurantId);
@@ -103,6 +127,48 @@ public class TableService {
             table.setZone(request.zone());
         }
         return tableRepository.save(table);
+    }
+
+    @Transactional
+    public List<RestaurantTable> createBulk(UUID restaurantId, CreateTablesBulkRequest request) {
+        SecurityContextUtil.validateRestaurantOwnership(restaurantId);
+
+        if (request.fromNumber() > request.toNumber()) {
+            throw new BadRequestException("fromNumber must be less than or equal to toNumber");
+        }
+
+        int totalTables = request.toNumber() - request.fromNumber() + 1;
+        if (totalTables > MAX_BULK_TABLES) {
+            throw new BadRequestException("Cannot create more than " + MAX_BULK_TABLES + " tables at once");
+        }
+
+        String prefix = request.labelPrefix().trim();
+        Set<String> existingLabels = tableRepository.findByRestaurantIdOrderByLabelAsc(restaurantId).stream()
+                .map(RestaurantTable::getLabel)
+                .collect(Collectors.toSet());
+        Set<String> batchLabels = new HashSet<>();
+
+        for (int current = request.fromNumber(); current <= request.toNumber(); current++) {
+            String generatedLabel = buildGeneratedLabel(prefix, current);
+            if (!batchLabels.add(generatedLabel) || existingLabels.contains(generatedLabel)) {
+                throw new BadRequestException("Table label already exists: " + generatedLabel);
+            }
+        }
+
+        List<RestaurantTable> tablesToCreate = new ArrayList<>(totalTables);
+        for (int current = request.fromNumber(); current <= request.toNumber(); current++) {
+            RestaurantTable table = new RestaurantTable(
+                    restaurantId,
+                    buildGeneratedLabel(prefix, current),
+                    request.capacity()
+            );
+            if (request.zone() != null) {
+                table.setZone(request.zone());
+            }
+            tablesToCreate.add(table);
+        }
+
+        return tableRepository.saveAll(tablesToCreate);
     }
 
     @Transactional
@@ -163,5 +229,13 @@ public class TableService {
                 .orElseThrow(() -> new ResourceNotFoundException("Table", tableId));
         SecurityContextUtil.validateRestaurantOwnership(table.getRestaurantId());
         return table;
+    }
+
+    private String buildGeneratedLabel(String prefix, int number) {
+        String label = (prefix + " " + number).trim();
+        if (label.length() > MAX_LABEL_LENGTH) {
+            throw new BadRequestException("Generated label exceeds 100 characters: " + label);
+        }
+        return label;
     }
 }

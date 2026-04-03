@@ -2,6 +2,7 @@ package com.queuetable.table.adapter.in;
 
 import com.queuetable.table.domain.TableService;
 import com.queuetable.table.dto.CreateTableRequest;
+import com.queuetable.table.dto.CreateTablesBulkRequest;
 import com.queuetable.table.dto.TableResponse;
 import com.queuetable.table.dto.UpdateTableRequest;
 import com.queuetable.table.dto.UpdateTableStatusRequest;
@@ -59,6 +60,18 @@ public class TableController {
                                                 @Valid @RequestBody CreateTableRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(TableResponse.from(tableService.create(restaurantId, request)));
+    }
+
+    @PostMapping("/restaurants/{restaurantId}/tables/bulk")
+    @Operation(summary = "Crear varias mesas consecutivas")
+    @ApiResponse(responseCode = "201", description = "Mesas creadas")
+    @ApiResponse(responseCode = "400", description = "Rango o etiquetas invalidas")
+    public ResponseEntity<List<TableResponse>> createBulk(@PathVariable UUID restaurantId,
+                                                          @Valid @RequestBody CreateTablesBulkRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(tableService.createBulk(restaurantId, request).stream()
+                        .map(TableResponse::from)
+                        .toList());
     }
 
     @PatchMapping("/tables/{id}")

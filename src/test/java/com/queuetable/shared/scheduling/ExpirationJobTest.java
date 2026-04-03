@@ -12,6 +12,7 @@ import com.queuetable.reservation.domain.ReservationRepository;
 import com.queuetable.reservation.domain.ReservationStatus;
 import com.queuetable.reservation.dto.CreateReservationRequest;
 import com.queuetable.shared.AbstractIntegrationTest;
+import com.queuetable.table.dto.CreateTableRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -56,6 +57,17 @@ class ExpirationJobTest extends AbstractIntegrationTest {
         return JsonPath.read(result.getResponse().getContentAsString(), "$.slug");
     }
 
+    private String createTable(AuthResponse auth, String label, int capacity) throws Exception {
+        var request = new CreateTableRequest(label, capacity, null);
+        MvcResult result = mockMvc.perform(post("/restaurants/{id}/tables", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return JsonPath.read(result.getResponse().getContentAsString(), "$.id");
+    }
+
     @Test
     void expiresUnconfirmedQueueEntries() throws Exception {
         AuthResponse auth = freshRestaurant();
@@ -91,11 +103,12 @@ class ExpirationJobTest extends AbstractIntegrationTest {
     @Test
     void expiresNoShowReservations() throws Exception {
         AuthResponse auth = freshRestaurant();
+        String tableId = createTable(auth, "Mesa No Show", 2);
 
         // Create reservation in the past (30 minutes ago)
         var resReq = new CreateReservationRequest(
                 "No Show", null, 2,
-                Instant.now().minus(30, ChronoUnit.MINUTES), null);
+                Instant.now().minus(30, ChronoUnit.MINUTES), UUID.fromString(tableId), null);
 
         MvcResult result = mockMvc.perform(post("/restaurants/{id}/reservations", auth.restaurantId())
                         .header("Authorization", bearer(auth))

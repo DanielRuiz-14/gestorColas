@@ -30,9 +30,10 @@ class ReservationControllerTest extends AbstractIntegrationTest {
     }
 
     private String createReservation(AuthResponse auth, String name, int partySize) throws Exception {
+        String tableId = createTable(auth, "Reserva " + UUID.randomUUID().toString().substring(0, 8), partySize);
         var request = new CreateReservationRequest(
                 name, null, partySize,
-                Instant.now().plus(2, ChronoUnit.HOURS), null);
+                Instant.now().plus(2, ChronoUnit.HOURS), UUID.fromString(tableId), null);
 
         MvcResult result = mockMvc.perform(post("/restaurants/{id}/reservations", auth.restaurantId())
                         .header("Authorization", bearer(auth))
@@ -61,9 +62,10 @@ class ReservationControllerTest extends AbstractIntegrationTest {
     @Test
     void createReservation_success() throws Exception {
         AuthResponse auth = freshRestaurant();
+        String tableId = createTable(auth, "Mesa Reserva", 4);
         var request = new CreateReservationRequest(
                 "John Doe", "555-1234", 4,
-                Instant.now().plus(1, ChronoUnit.HOURS), "Window seat");
+                Instant.now().plus(1, ChronoUnit.HOURS), UUID.fromString(tableId), "Window seat");
 
         mockMvc.perform(post("/restaurants/{id}/reservations", auth.restaurantId())
                         .header("Authorization", bearer(auth))
@@ -72,8 +74,69 @@ class ReservationControllerTest extends AbstractIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.customerName").value("John Doe"))
                 .andExpect(jsonPath("$.partySize").value(4))
+                .andExpect(jsonPath("$.tableId").value(tableId))
                 .andExpect(jsonPath("$.status").value("BOOKED"))
                 .andExpect(jsonPath("$.notes").value("Window seat"));
+    }
+
+    @Test
+    void createReservation_requiresFreeAssignedTable() throws Exception {
+        AuthResponse auth = freshRestaurant();
+        String tableId = createTable(auth, "Mesa Ocupada", 4);
+
+        mockMvc.perform(patch("/tables/{id}/status", tableId)
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new com.queuetable.table.dto.UpdateTableStatusRequest(com.queuetable.table.domain.TableStatus.OCCUPIED))))
+                .andExpect(status().isOk());
+
+        var request = new CreateReservationRequest(
+                "John Doe", "555-1234", 4,
+                Instant.now().plus(1, ChronoUnit.HOURS), UUID.fromString(tableId), "Window seat");
+
+        mockMvc.perform(post("/restaurants/{id}/reservations", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void createReservation_rejectsAssignedTableThatIsTooSmall() throws Exception {
+        AuthResponse auth = freshRestaurant();
+        String tableId = createTable(auth, "Mesa Pequena", 2);
+
+        var request = new CreateReservationRequest(
+                "John Doe", "555-1234", 4,
+                Instant.now().plus(1, ChronoUnit.HOURS), UUID.fromString(tableId), "Window seat");
+
+        mockMvc.perform(post("/restaurants/{id}/reservations", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void createReservation_rejectsOverlappingBookingOnSameTable() throws Exception {
+        AuthResponse auth = freshRestaurant();
+        String tableId = createTable(auth, "Mesa Compartida", 4);
+        Instant reservedAt = Instant.now().plus(2, ChronoUnit.HOURS);
+
+        mockMvc.perform(post("/restaurants/{id}/reservations", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CreateReservationRequest(
+                                "Primera", null, 4, reservedAt, UUID.fromString(tableId), null))))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/restaurants/{id}/reservations", auth.restaurantId())
+                        .header("Authorization", bearer(auth))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new CreateReservationRequest(
+                                "Segunda", null, 4, reservedAt.plus(15, ChronoUnit.MINUTES), UUID.fromString(tableId), null))))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -108,8 +171,9 @@ class ReservationControllerTest extends AbstractIntegrationTest {
     void updateReservation_success() throws Exception {
         AuthResponse auth = freshRestaurant();
         String resId = createReservation(auth, "Original", 2);
+        String replacementTableId = createTable(auth, "Mesa Reasignada", 5);
 
-        var update = new UpdateReservationRequest("Updated", null, 5, null, null);
+        var update = new UpdateReservationRequest("Updated", null, 5, null, UUID.fromString(replacementTableId), null);
 
         mockMvc.perform(patch("/reservations/{id}", resId)
                         .header("Authorization", bearer(auth))
@@ -117,7 +181,8 @@ class ReservationControllerTest extends AbstractIntegrationTest {
                         .content(objectMapper.writeValueAsString(update)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.customerName").value("Updated"))
-                .andExpect(jsonPath("$.partySize").value(5));
+                .andExpect(jsonPath("$.partySize").value(5))
+                .andExpect(jsonPath("$.tableId").value(replacementTableId));
     }
 
     @Test
@@ -131,7 +196,7 @@ class ReservationControllerTest extends AbstractIntegrationTest {
                 .andExpect(status().isOk());
 
         // Now try to update → should fail
-        var update = new UpdateReservationRequest("New Name", null, null, null, null);
+        var update = new UpdateReservationRequest("New Name", null, null, null, null, null);
         mockMvc.perform(patch("/reservations/{id}", resId)
                         .header("Authorization", bearer(auth))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -204,7 +269,7 @@ class ReservationControllerTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void seat_tableTooSmall_returns400() throws Exception {
+    void seat_tableTooSmall_isAllowed() throws Exception {
         AuthResponse auth = freshRestaurant();
         String resId = createReservation(auth, "Big Group", 6);
         String tableId = createTable(auth, "Mesa Small", 2);
@@ -217,7 +282,9 @@ class ReservationControllerTest extends AbstractIntegrationTest {
                         .header("Authorization", bearer(auth))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(seatReq)))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SEATED"))
+                .andExpect(jsonPath("$.tableId").value(tableId));
     }
 
     @Test

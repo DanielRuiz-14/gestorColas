@@ -7,6 +7,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
+import java.util.UUID;
 
 @Schema(description = "Datos para crear una nueva reserva")
 public record CreateReservationRequest(
@@ -14,5 +15,6 @@ public record CreateReservationRequest(
         @Schema(example = "+34 611 222 333") @Size(max = 50) String customerPhone,
         @Schema(description = "Tamanio del grupo", example = "4") @Min(1) int partySize,
         @Schema(description = "Fecha y hora de la reserva (ISO 8601)") @NotNull Instant reservedAt,
+        @Schema(description = "Mesa preasignada obligatoria para la reserva") @NotNull UUID tableId,
         @Schema(example = "Mesa en terraza si es posible") String notes
 ) {}

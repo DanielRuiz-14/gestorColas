@@ -79,7 +79,7 @@ public class QueueService {
             throw new BadRequestException("Queue is full");
         }
 
-        int nextPosition = queueEntryRepository.findMaxPosition(restaurant.getId()) + 1;
+        int nextPosition = queueEntryRepository.findMaxActivePosition(restaurant.getId()) + 1;
 
         QueueEntry entry = new QueueEntry(
                 restaurant.getId(),
@@ -164,10 +164,6 @@ public class QueueService {
         if (table.getStatus() != TableStatus.FREE) {
             throw new BadRequestException("Table is not free, current status: " + table.getStatus());
         }
-        if (table.getCapacity() < entry.getPartySize()) {
-            throw new BadRequestException(
-                    "Table capacity (" + table.getCapacity() + ") is less than party size (" + entry.getPartySize() + ")");
-        }
 
         entry.setStatus(QueueEntryStatus.SEATED);
         entry.setTableId(table.getId());
@@ -190,7 +186,7 @@ public class QueueService {
         RestaurantConfig config = getConfig(restaurantId);
 
         int waitingCount = queueEntryRepository.countWaiting(restaurantId);
-        int nextPosition = queueEntryRepository.findMaxPosition(restaurantId) + 1;
+        int nextPosition = queueEntryRepository.findMaxActivePosition(restaurantId) + 1;
 
         QueueEntry entry = new QueueEntry(restaurantId, request.customerName(), request.partySize(), nextPosition);
         entry.setWalkIn(true);
@@ -251,7 +247,7 @@ public class QueueService {
         }
 
         // Move to end of queue
-        int maxPosition = queueEntryRepository.findMaxPosition(restaurantId);
+        int maxPosition = queueEntryRepository.findMaxActivePosition(restaurantId);
         entry.setPosition(maxPosition + 1);
         entry.setStatus(QueueEntryStatus.WAITING);
         entry.setNotifiedAt(null);

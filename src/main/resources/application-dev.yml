@@ -1,0 +1,3 @@
+queuetable:
+  rate-limit:
+    enabled: false

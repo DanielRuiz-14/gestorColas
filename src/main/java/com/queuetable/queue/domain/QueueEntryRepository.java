@@ -22,6 +22,14 @@ public interface QueueEntryRepository extends JpaRepository<QueueEntry, UUID> {
     @Query("SELECT COALESCE(MAX(e.position), 0) FROM QueueEntry e WHERE e.restaurantId = :restaurantId")
     int findMaxPosition(UUID restaurantId);
 
+    @Query("""
+            SELECT COALESCE(MAX(e.position), 0)
+            FROM QueueEntry e
+            WHERE e.restaurantId = :restaurantId
+              AND e.status IN ('WAITING', 'NOTIFIED')
+            """)
+    int findMaxActivePosition(UUID restaurantId);
+
     List<QueueEntry> findByRestaurantIdAndStatusInOrderByPositionAsc(UUID restaurantId, List<QueueEntryStatus> statuses);
 
     List<QueueEntry> findByStatusAndNotifiedAtBefore(QueueEntryStatus status, Instant cutoff);

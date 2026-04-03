@@ -1,5 +1,7 @@
 package com.queuetable.reservation.domain;
 
+import com.queuetable.config.domain.RestaurantConfig;
+import com.queuetable.config.domain.RestaurantConfigRepository;
 import com.queuetable.reservation.dto.CreateReservationRequest;
 import com.queuetable.reservation.dto.ReservationResponse;
 import com.queuetable.reservation.dto.SeatReservationRequest;
@@ -25,6 +27,7 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
+import java.time.temporal.ChronoUnit;
 
 @Service
 public class ReservationService {
@@ -33,15 +36,18 @@ public class ReservationService {
 
     private final ReservationRepository reservationRepository;
     private final TableRepository tableRepository;
+    private final RestaurantConfigRepository configRepository;
     private final EventPublisher eventPublisher;
     private final ApplicationEventPublisher applicationEventPublisher;
 
     public ReservationService(ReservationRepository reservationRepository,
                               TableRepository tableRepository,
+                              RestaurantConfigRepository configRepository,
                               EventPublisher eventPublisher,
                               ApplicationEventPublisher applicationEventPublisher) {
         this.reservationRepository = reservationRepository;
         this.tableRepository = tableRepository;
+        this.configRepository = configRepository;
         this.eventPublisher = eventPublisher;
         this.applicationEventPublisher = applicationEventPublisher;
     }
@@ -78,6 +84,13 @@ public class ReservationService {
     @Transactional
     public ReservationResponse create(UUID restaurantId, CreateReservationRequest request) {
         SecurityContextUtil.validateRestaurantOwnership(restaurantId);
+        RestaurantTable table = validateAssignedTable(
+                restaurantId,
+                request.tableId(),
+                request.partySize(),
+                request.reservedAt(),
+                null
+        );
 
         Reservation reservation = new Reservation(
                 restaurantId,
@@ -91,6 +104,7 @@ public class ReservationService {
         if (request.notes() != null) {
             reservation.setNotes(request.notes());
         }
+        reservation.setTableId(table.getId());
 
         ReservationResponse response = ReservationResponse.from(reservationRepository.save(reservation));
         eventPublisher.publishReservationUpdated(restaurantId, response);
@@ -105,13 +119,26 @@ public class ReservationService {
             throw new BadRequestException("Can only edit reservations in BOOKED status");
         }
 
+        int nextPartySize = request.partySize() != null ? request.partySize() : reservation.getPartySize();
+        Instant nextReservedAt = request.reservedAt() != null ? request.reservedAt() : reservation.getReservedAt();
+        UUID nextTableId = request.tableId() != null ? request.tableId() : reservation.getTableId();
+
+        RestaurantTable table = validateAssignedTable(
+                reservation.getRestaurantId(),
+                nextTableId,
+                nextPartySize,
+                nextReservedAt,
+                reservation.getId()
+        );
+
         if (request.customerName() != null) reservation.setCustomerName(request.customerName());
         if (request.customerPhone() != null) reservation.setCustomerPhone(request.customerPhone());
-        if (request.partySize() != null) reservation.setPartySize(request.partySize());
-        if (request.reservedAt() != null) reservation.setReservedAt(request.reservedAt());
+        reservation.setPartySize(nextPartySize);
+        reservation.setReservedAt(nextReservedAt);
+        reservation.setTableId(table.getId());
         if (request.notes() != null) reservation.setNotes(request.notes());
 
-        return ReservationResponse.from(reservationRepository.save(reservation));
+        return saveAndPublish(reservation);
     }
 
     @Transactional
@@ -134,10 +161,6 @@ public class ReservationService {
         }
         if (table.getStatus() != TableStatus.FREE) {
             throw new BadRequestException("Table is not free, current status: " + table.getStatus());
-        }
-        if (table.getCapacity() < reservation.getPartySize()) {
-            throw new BadRequestException(
-                    "Table capacity (" + table.getCapacity() + ") is less than party size (" + reservation.getPartySize() + ")");
         }
 
         reservation.setTableId(table.getId());
@@ -208,5 +231,63 @@ public class ReservationService {
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
         SecurityContextUtil.validateRestaurantOwnership(reservation.getRestaurantId());
         return reservation;
+    }
+
+    private RestaurantTable validateAssignedTable(
+            UUID restaurantId,
+            UUID tableId,
+            int partySize,
+            Instant reservedAt,
+            UUID currentReservationId
+    ) {
+        if (tableId == null) {
+            throw new BadRequestException("Reservation requires an assigned table");
+        }
+
+        RestaurantTable table = tableRepository.findById(tableId)
+                .orElseThrow(() -> new ResourceNotFoundException("Table", tableId));
+
+        if (!table.getRestaurantId().equals(restaurantId)) {
+            throw new ForbiddenException("Table does not belong to this restaurant");
+        }
+        if (table.getStatus() != TableStatus.FREE) {
+            throw new BadRequestException("Assigned table must be free, current status: " + table.getStatus());
+        }
+        if (table.getCapacity() < partySize) {
+            throw new BadRequestException("Assigned table capacity is smaller than the reservation party size");
+        }
+
+        ensureTableHasNoOverlappingReservation(restaurantId, tableId, reservedAt, currentReservationId);
+        return table;
+    }
+
+    private void ensureTableHasNoOverlappingReservation(
+            UUID restaurantId,
+            UUID tableId,
+            Instant reservedAt,
+            UUID currentReservationId
+    ) {
+        RestaurantConfig config = configRepository.findByRestaurantId(restaurantId)
+                .orElseThrow(() -> new ResourceNotFoundException("RestaurantConfig", restaurantId));
+
+        long avgDurationMinutes = config.getAvgTableDurationMinutes();
+        Instant requestedEnd = reservedAt.plus(avgDurationMinutes, ChronoUnit.MINUTES);
+
+        List<Reservation> activeReservations = reservationRepository.findByTableIdAndStatusIn(
+                tableId,
+                List.of(ReservationStatus.BOOKED, ReservationStatus.ARRIVED, ReservationStatus.SEATED)
+        );
+
+        boolean conflictExists = activeReservations.stream()
+                .filter(existing -> currentReservationId == null || !existing.getId().equals(currentReservationId))
+                .anyMatch(existing -> {
+                    Instant existingStart = existing.getReservedAt();
+                    Instant existingEnd = existingStart.plus(avgDurationMinutes, ChronoUnit.MINUTES);
+                    return reservedAt.isBefore(existingEnd) && existingStart.isBefore(requestedEnd);
+                });
+
+        if (conflictExists) {
+            throw new BadRequestException("Assigned table already has another active reservation in that time slot");
+        }
     }
 }

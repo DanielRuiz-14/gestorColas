@@ -151,9 +151,10 @@ class FullFlowE2ETest extends AbstractIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(new CreateReservationRequest(
                                 "E2E Reserva", "555-RES", 3,
-                                Instant.now().plus(1, ChronoUnit.HOURS), "Mesa ventana"))))
+                                Instant.now().plus(1, ChronoUnit.HOURS), UUID.fromString(tableId), "Mesa ventana"))))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("BOOKED"))
+                .andExpect(jsonPath("$.tableId").value(tableId))
                 .andReturn();
 
         String resId = JsonPath.read(resResult.getResponse().getContentAsString(), "$.id");
