@@ -31,7 +31,10 @@ public class SecurityConfig {
             JwtAuthenticationFilter jwtAuthenticationFilter,
             @Value("${app.cors.allowed-origins}") String allowedOrigins) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
-        this.allowedOrigins = Arrays.asList(allowedOrigins.split(","));
+        this.allowedOrigins = Arrays.stream(allowedOrigins.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
     }
 
     @Bean

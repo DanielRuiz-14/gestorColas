@@ -14,7 +14,10 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final String[] allowedOrigins;
 
     public WebSocketConfig(@Value("${app.cors.allowed-origins}") String allowedOrigins) {
-        this.allowedOrigins = allowedOrigins.split(",");
+        this.allowedOrigins = java.util.Arrays.stream(allowedOrigins.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toArray(String[]::new);
     }
 
     @Override
